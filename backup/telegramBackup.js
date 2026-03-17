@@ -4,6 +4,8 @@ const https = require('https');
 const mongoose = require('mongoose');
 const { listDatabases, DB_DIR } = require('../gateway/dbConnector');
 
+const getServerId = () => process.env.SERVER_ID || 'default_server';
+
 // ─── MongoDB Schemas ───
 const backupSchema = new mongoose.Schema({
     db_name: { type: String, required: true },
@@ -23,8 +25,9 @@ const settingsSchema = new mongoose.Schema({
 });
 
 const getBackupModel = (dbName) => {
-    const modelName = `Backup_${dbName}`;
-    const collectionName = `backup_${dbName}`;
+    const serverId = getServerId();
+    const modelName = `Backup_${serverId}_${dbName}`;
+    const collectionName = `backup_${serverId}_${dbName}`;
     if (mongoose.models[modelName]) {
         return mongoose.models[modelName];
     }
@@ -49,9 +52,10 @@ const connectMongo = async () => {
         console.log('[MongoDB] Connected for backup metadata');
 
         // Ensure default settings
-        const existing = await Settings.findOne({ key: 'backup_interval' });
+        const serverId = getServerId();
+        const existing = await Settings.findOne({ key: `${serverId}_backup_interval` });
         if (!existing) {
-            await Settings.create({ key: 'backup_interval', value: '30' });
+            await Settings.create({ key: `${serverId}_backup_interval`, value: '30' });
         }
     } catch (err) {
         console.error('[MongoDB] Connection failed:', err.message);
@@ -313,13 +317,16 @@ const listBackups = async (dbName) => {
 
     if (dbName) {
         const BackupModel = getBackupModel(dbName);
-        return await fetchFromModel(BackupModel);
+        return fetchFromModel(BackupModel);
     }
     
-    const collections = await mongoose.connection.db.listCollections({ name: /^backup_/ }).toArray();
+    const serverId = getServerId();
+    const prefix = `backup_${serverId}_`;
+    const regex = new RegExp(`^${prefix}`);
+    const collections = await mongoose.connection.db.listCollections({ name: regex }).toArray();
     let allBackups = [];
     for (const coll of collections) {
-        const name = coll.name.replace('backup_', '');
+        const name = coll.name.replace(prefix, '');
         const BackupModel = getBackupModel(name);
         const backups = await fetchFromModel(BackupModel);
         allBackups = allBackups.concat(backups);
@@ -413,14 +420,16 @@ const restoreBackup = async (backupId, dbName) => {
 // ─── Settings (from MongoDB) ───
 const getBackupInterval = async () => {
     await connectMongo();
-    const row = await Settings.findOne({ key: 'backup_interval' }).lean();
+    const serverId = getServerId();
+    const row = await Settings.findOne({ key: `${serverId}_backup_interval` }).lean();
     return row ? parseInt(row.value) : 30;
 };
 
 const setBackupInterval = async (minutes) => {
     await connectMongo();
+    const serverId = getServerId();
     await Settings.findOneAndUpdate(
-        { key: 'backup_interval' },
+        { key: `${serverId}_backup_interval` },
         { value: String(minutes) },
         { upsert: true }
     );
@@ -432,14 +441,15 @@ const performInitialRestore = async () => {
     if (!isConnected) return; // No MongoDB, no backups
 
     const { listDatabases } = require('../gateway/dbConnector');
+    const serverId = getServerId();
     
     // Check if initial restore was already processed
-    const done = await Settings.findOne({ key: 'initial_restore_done' }).lean();
+    const done = await Settings.findOne({ key: `${serverId}_initial_restore_done` }).lean();
     if (done) return; // Already did this in the past
 
     // Mark as done immediately so we never do it again in future runs, even if DBs are deleted
     await Settings.findOneAndUpdate(
-        { key: 'initial_restore_done' },
+        { key: `${serverId}_initial_restore_done` },
         { value: 'true' },
         { upsert: true }
     );
