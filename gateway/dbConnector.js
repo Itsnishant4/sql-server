@@ -9,13 +9,19 @@ if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-const getDatabase = (dbName) => {
+const getDatabase = (dbName, options = { create: false }) => {
     if (connections.has(dbName)) {
         return connections.get(dbName);
     }
 
     const dbPath = path.join(DB_DIR, `${dbName}.db`);
-    const db = new Database(dbPath);
+    
+    if (!options.create && !fs.existsSync(dbPath)) {
+        throw new Error(`Database '${dbName}' does not exist.`);
+    }
+
+    // Using better-sqlite3 with fileMustExist based on create flag
+    const db = new Database(dbPath, { fileMustExist: !options.create });
 
     // Performance optimizations as requested in plan
     db.pragma('journal_mode = WAL');

@@ -204,7 +204,7 @@ app.get('/databases', (req, res) => {
     }
 });
 app.post('/databases/:db', (req, res) => {
-    try { getDatabase(req.params.db); res.json({ success: true, message: `Database ${req.params.db} created` }); }
+    try { getDatabase(req.params.db, { create: true }); res.json({ success: true, message: `Database ${req.params.db} created` }); }
     catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 app.delete('/databases/:db', (req, res) => {
@@ -453,7 +453,9 @@ app.post('/:db', (req, res) => {
 });
 
 // ─────────────────── Start ───────────────────
+const { performInitialRestore } = require('./backup/telegramBackup');
 const start = async () => {
+    await performInitialRestore();
     initScheduler();
     app.listen(PORT, () => {
         console.log(`SQLite Cloud Gateway running on port ${PORT}`);

@@ -427,4 +427,60 @@ const setBackupInterval = async (minutes) => {
     return minutes;
 };
 
-module.exports = { backupToTelegram, listBackups, restoreBackup, getBackupInterval, setBackupInterval, connectMongo };
+const performInitialRestore = async () => {
+    await connectMongo();
+    if (!isConnected) return; // No MongoDB, no backups
+
+    const { listDatabases } = require('../gateway/dbConnector');
+    
+    // Check if initial restore was already processed
+    const done = await Settings.findOne({ key: 'initial_restore_done' }).lean();
+    if (done) return; // Already did this in the past
+
+    // Mark as done immediately so we never do it again in future runs, even if DBs are deleted
+    await Settings.findOneAndUpdate(
+        { key: 'initial_restore_done' },
+        { value: 'true' },
+        { upsert: true }
+    );
+
+    // If local databases already exist, don't overwrite or restore anything
+    const localDbs = listDatabases().filter(n => !n.startsWith('_'));
+    if (localDbs.length > 0) return;
+
+    try {
+        console.log('🔄 [Initial Restore] No local databases found. Checking for remote backups...');
+        
+        const latestBackups = await listBackups();
+        if (!latestBackups || latestBackups.length === 0) {
+            console.log('ℹ️ [Initial Restore] No existing backups found.');
+            return;
+        }
+
+        // We only want the latest backup per database. listBackups already sorts by timestamp desc,
+        // so we can just grab the first one we see for each db_name.
+        const seenDbs = new Set();
+        let restoredCount = 0;
+
+        for (const backup of latestBackups) {
+            if (!seenDbs.has(backup.db_name) && backup.status.includes('completed')) {
+                seenDbs.add(backup.db_name);
+                console.log(`⏳ [Initial Restore] Restoring latest backup for "${backup.db_name}"...`);
+                try {
+                    await restoreBackup(backup._id.toString(), backup.db_name);
+                    restoredCount++;
+                } catch (err) {
+                    console.error(`❌ [Initial Restore] Failed to restore "${backup.db_name}":`, err.message);
+                }
+            }
+        }
+        
+        if (restoredCount > 0) {
+            console.log(`✅ [Initial Restore] Successfully restored ${restoredCount} databases on first run.`);
+        }
+    } catch (err) {
+        console.error('❌ [Initial Restore] Error during initial restore process:', err.message);
+    }
+};
+
+module.exports = { backupToTelegram, listBackups, restoreBackup, getBackupInterval, setBackupInterval, connectMongo, performInitialRestore };
