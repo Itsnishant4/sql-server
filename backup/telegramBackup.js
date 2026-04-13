@@ -4,7 +4,67 @@ const https = require('https');
 const mongoose = require('mongoose');
 const { listDatabases, DB_DIR } = require('../gateway/dbConnector');
 
-const getServerId = () => process.env.SERVER_ID || 'default_server';
+let cachedServerId = null;
+
+const getServerId = async () => {
+    if (cachedServerId) return cachedServerId;
+
+    // 1. Check environment variable (highest priority)
+    if (process.env.SERVER_ID) {
+        cachedServerId = process.env.SERVER_ID;
+        return cachedServerId;
+    }
+
+    // 2. Check local persistence file
+    const idFilePath = path.join(process.cwd(), '.server_id');
+    try {
+        if (fs.existsSync(idFilePath)) {
+            cachedServerId = fs.readFileSync(idFilePath, 'utf8').trim();
+            if (cachedServerId) {
+                console.log(`[ServerID] Loaded from local file: ${cachedServerId}`);
+                return cachedServerId;
+            }
+        }
+    } catch (err) {
+        console.warn('[ServerID] Failed to read .server_id file:', err.message);
+    }
+
+    // 3. Generate new ID (Hostname/IP)
+    const os = require('os');
+    const hostname = os.hostname();
+    let generatedId = '';
+    
+    try {
+        const ip = await new Promise((resolve) => {
+            const options = { timeout: 3000 };
+            https.get('https://api.ipify.org', options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => resolve(data.trim()));
+            }).on('error', () => resolve(null));
+        });
+
+        generatedId = ip ? `ip_${ip.replace(/\./g, '_')}` : `host_${hostname.replace(/\./g, '_')}`;
+    } catch {
+        generatedId = `host_${hostname.replace(/\./g, '_')}`;
+    }
+
+    // Persist to file for future restarts
+    try {
+        fs.writeFileSync(idFilePath, generatedId);
+        console.log(`[ServerID] Generated and saved new ID: ${generatedId}`);
+    } catch (err) {
+        console.warn('[ServerID] Failed to save .server_id file:', err.message);
+    }
+
+    cachedServerId = generatedId;
+    return cachedServerId;
+};
+
+const getSyncServerId = () => {
+    return cachedServerId || process.env.SERVER_ID || 'default_server';
+};
+
 
 // ─── MongoDB Schemas ───
 const backupSchema = new mongoose.Schema({
@@ -25,9 +85,10 @@ const settingsSchema = new mongoose.Schema({
 });
 
 const getBackupModel = (dbName) => {
-    const serverId = getServerId();
+    const serverId = getSyncServerId();
     const modelName = `Backup_${serverId}_${dbName}`;
     const collectionName = `backup_${serverId}_${dbName}`;
+
     if (mongoose.models[modelName]) {
         return mongoose.models[modelName];
     }
@@ -52,8 +113,9 @@ const connectMongo = async () => {
         console.log('[MongoDB] Connected for backup metadata');
 
         // Ensure default settings
-        const serverId = getServerId();
+        const serverId = await getServerId();
         const existing = await Settings.findOne({ key: `${serverId}_backup_interval` });
+
         if (!existing) {
             await Settings.create({ key: `${serverId}_backup_interval`, value: '30' });
         }
@@ -320,10 +382,19 @@ const listBackups = async (dbName) => {
         return fetchFromModel(BackupModel);
     }
     
-    const serverId = getServerId();
+    const serverId = await getServerId();
     const prefix = `backup_${serverId}_`;
     const regex = new RegExp(`^${prefix}`);
+
+    // Ensure connection is fully ready
+    if (!mongoose.connection.db) {
+        console.warn('[listBackups] MongoDB database property not available, waiting...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (!mongoose.connection.db) throw new Error('MongoDB not ready');
+    }
+
     const collections = await mongoose.connection.db.listCollections({ name: regex }).toArray();
+
     let allBackups = [];
     for (const coll of collections) {
         const name = coll.name.replace(prefix, '');
@@ -420,14 +491,14 @@ const restoreBackup = async (backupId, dbName) => {
 // ─── Settings (from MongoDB) ───
 const getBackupInterval = async () => {
     await connectMongo();
-    const serverId = getServerId();
+    const serverId = await getServerId();
     const row = await Settings.findOne({ key: `${serverId}_backup_interval` }).lean();
     return row ? parseInt(row.value) : 30;
 };
 
 const setBackupInterval = async (minutes) => {
     await connectMongo();
-    const serverId = getServerId();
+    const serverId = await getServerId();
     await Settings.findOneAndUpdate(
         { key: `${serverId}_backup_interval` },
         { value: String(minutes) },
@@ -436,61 +507,65 @@ const setBackupInterval = async (minutes) => {
     return minutes;
 };
 
+
 const performInitialRestore = async () => {
     await connectMongo();
-    if (!isConnected) return; // No MongoDB, no backups
+    if (!isConnected) {
+        console.error('❌ [Recovery] MongoDB not connected. Restoration aborted.');
+        return;
+    }
 
     const { listDatabases } = require('../gateway/dbConnector');
-    const serverId = getServerId();
+    const serverId = await getServerId();
     
-    // Check if initial restore was already processed
-    const done = await Settings.findOne({ key: `${serverId}_initial_restore_done` }).lean();
-    if (done) return; // Already did this in the past
-
-    // Mark as done immediately so we never do it again in future runs, even if DBs are deleted
-    await Settings.findOneAndUpdate(
-        { key: `${serverId}_initial_restore_done` },
-        { value: 'true' },
-        { upsert: true }
-    );
-
-    // If local databases already exist, don't overwrite or restore anything
-    const localDbs = listDatabases().filter(n => !n.startsWith('_'));
-    if (localDbs.length > 0) return;
-
     try {
-        console.log('🔄 [Initial Restore] No local databases found. Checking for remote backups...');
+        console.log(`🔄 [Recovery] Scanning for missing databases (ID: ${serverId})...`);
         
         const latestBackups = await listBackups();
+        console.log(`ℹ️ [Recovery] Found ${latestBackups?.length || 0} total backup entries in history.`);
+
         if (!latestBackups || latestBackups.length === 0) {
-            console.log('ℹ️ [Initial Restore] No existing backups found.');
+            console.log('ℹ️ [Recovery] No remote backups discovered for this Server ID.');
             return;
         }
 
-        // We only want the latest backup per database. listBackups already sorts by timestamp desc,
-        // so we can just grab the first one we see for each db_name.
+        const localDbs = new Set(listDatabases().filter(n => !n.startsWith('_')));
+        console.log(`ℹ️ [Recovery] Current local databases: ${Array.from(localDbs).join(', ') || 'none'}`);
+        
         const seenDbs = new Set();
         let restoredCount = 0;
 
         for (const backup of latestBackups) {
-            if (!seenDbs.has(backup.db_name) && backup.status.includes('completed')) {
-                seenDbs.add(backup.db_name);
-                console.log(`⏳ [Initial Restore] Restoring latest backup for "${backup.db_name}"...`);
-                try {
-                    await restoreBackup(backup._id.toString(), backup.db_name);
-                    restoredCount++;
-                } catch (err) {
-                    console.error(`❌ [Initial Restore] Failed to restore "${backup.db_name}":`, err.message);
+            const dbName = backup.db_name;
+            if (seenDbs.has(dbName)) continue;
+            seenDbs.add(dbName);
+
+            // If the local file is missing, pull it from Telegram
+            if (!localDbs.has(dbName)) {
+                if (backup.status && backup.status.includes('completed')) {
+                    console.log(`⏳ [Recovery] DISCOVERED: Database "${dbName}" is missing locally but has a backup. Pulling from Telegram...`);
+                    try {
+                        await restoreBackup(backup._id.toString(), dbName);
+                        restoredCount++;
+                    } catch (err) {
+                        console.error(`❌ [Recovery] Failed to restore database "${dbName}":`, err.message);
+                    }
+                } else {
+                    console.log(`⚠️ [Recovery] Database "${dbName}" is missing locally, but latest backup is not marked as completed.`);
                 }
             }
         }
         
         if (restoredCount > 0) {
-            console.log(`✅ [Initial Restore] Successfully restored ${restoredCount} databases on first run.`);
+            console.log(`✅ [Recovery] Successfully restored ${restoredCount} missing databases.`);
+        } else {
+            console.log('✅ [Recovery] All expected databases are present locally.');
         }
     } catch (err) {
-        console.error('❌ [Initial Restore] Error during initial restore process:', err.message);
+        console.error('❌ [Recovery] Critical error during automated restore process:', err.message);
     }
 };
+
+
 
 module.exports = { backupToTelegram, listBackups, restoreBackup, getBackupInterval, setBackupInterval, connectMongo, performInitialRestore };
