@@ -41,6 +41,17 @@ jobs:
       # Build the app (required for deploy)
       - name: Build app
         run: pnpm run build
+      # Debug: check prisma version and config
+      - name: Debug Prisma CLI
+        run: |
+          echo "=== Prisma version ==="
+          bun run --bun prisma --version
+          echo "=== Prisma deploy help ==="
+          bun run --bun prisma deploy --help
+          echo "=== Check config file ==="
+          cat prisma.config.ts
+          echo "=== Check module file ==="
+          cat module.mjs
       # Deploy to Prisma Cloud (requires PRISMA_SERVICE_TOKEN secret or repo connected in Prisma Console)
       # See: https://github.com/prisma/cloud-deploy-action#using-a-service-token-instead
       - name: Deploy to Prisma Cloud
