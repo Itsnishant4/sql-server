@@ -16,9 +16,13 @@
     "node": "22.x || 24.x || 26.x"
   },
   "dependencies": {
+    "@prisma/composer": "0.34.0",
+    "@prisma/composer-prisma-cloud": "0.34.0",
+    "@prisma/orm-postgres": "8.0.0-rc.20",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
+    "effect": "4.0.3",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "mongoose": "^9.2.4",
@@ -27,6 +31,20 @@
     "node-cron": "^4.2.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "prisma": "8.0.0-rc.27"
+  },
+  "pnpm": {
+    "overrides": {
+      "@effect/platform-bun": "4.0.3",
+      "@effect/platform-node": "4.0.3",
+      "@effect/platform-node-shared": "4.0.3",
+      "@effect/sql-d1": "4.0.3",
+      "@effect/sql-mysql2": "4.0.3",
+      "@effect/sql-pg": "4.0.3",
+      "@effect/sql-sqlite-do": "4.0.3",
+      "@effect/vitest": "4.0.3",
+      "effect": "4.0.3"
+    }
   }
 }
