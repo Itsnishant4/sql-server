@@ -50,5 +50,4 @@ jobs:
           module: module.mjs
           build-command: echo "already built"
         env:
-          # Add PRISMA_SERVICE_TOKEN to GitHub Actions secrets to enable deploy
-          # PRISMA_SERVICE_TOKEN: ${{ secrets.PRISMA_SERVICE_TOKEN }}
+          PRISMA_SERVICE_TOKEN: ${{ secrets.PRISMA_SERVICE_TOKEN }}
