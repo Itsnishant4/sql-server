@@ -31,7 +31,8 @@
     "node-cron": "^4.2.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "prisma": "8.0.0-rc.27"
   },
   "pnpm": {
     "overrides": {
