@@ -31,6 +31,6 @@ jobs:
           bun-version: 1.3.13
       - uses: prisma/cloud-deploy-action@v1
         with:
-          install-command: pnpm install --frozen-lockfile
+          install-command: pnpm install
           module: module.mjs
           build-command: pnpm run build
